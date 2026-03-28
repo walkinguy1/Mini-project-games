@@ -2,7 +2,7 @@
 Shared HandTracker utility using MediaPipe Hands.
 Provides hand landmark detection, fingertip positions, finger states, and gesture recognition.
 """
-
+import time
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -298,3 +298,47 @@ class HandTracker:
         """Release MediaPipe resources."""
         if self.hands is not None:
             self.hands.close()
+
+    def calibrate(self, cap, duration_seconds=3) -> dict:
+        """Run a short calibration session, return recommended settings.
+        Call this before starting a game to adapt to current lighting.
+        
+        Args:
+            cap: OpenCV VideoCapture object (already opened)
+            duration_seconds: how long to sample (default 3 seconds)
+        
+        Returns:
+            dict with 'detection_rate' (0.0-1.0) and 'recommended_confidence'
+        """
+        import time
+        import cv2
+
+        detections = 0
+        total_frames = 0
+        start = time.time()
+
+        while time.time() - start < duration_seconds:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            frame = cv2.flip(frame, 1)
+            self.process_frame(frame)
+            total_frames += 1
+            if self.hand_detected:
+                detections += 1
+
+        detection_rate = detections / max(total_frames, 1)
+
+        # Lower confidence threshold if detection rate is poor
+        if detection_rate > 0.8:
+            recommended = 0.75
+        elif detection_rate > 0.5:
+            recommended = 0.60
+        else:
+            recommended = 0.45
+
+        return {
+            "detection_rate": detection_rate,
+            "recommended_confidence": recommended,
+            "frames_sampled": total_frames,
+        }

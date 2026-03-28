@@ -1,6 +1,11 @@
 """
 Flappy Bird — Hand Tracking Edition
 Open your hand to flap upward, make a fist to fall.
+
+Improvements applied:
+  1. Persistent high score (reads/writes scores.json via score_manager.py)
+  3. Procedural sound effects (via sound_fx.py — no audio files needed)
+  4. Gesture confidence smoothing (rolling window replaces open_frames counter)
 """
 
 import sys
@@ -14,6 +19,25 @@ import pygame
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hand_tracker import HandTracker
+
+# ── Improvement 1: persistent high score ────────────────────────────────────
+try:
+    from games.score_manager import save_score, get_high_score
+    _SCORES_AVAILABLE = True
+except ImportError:
+    def save_score(name, score): pass
+    def get_high_score(name): return 0
+    _SCORES_AVAILABLE = False
+
+# ── Improvement 3: procedural sound effects ──────────────────────────────────
+try:
+    from games.sound_fx import play_flap, play_score, play_game_over
+    _SOUND_AVAILABLE = True
+except ImportError:
+    def play_flap(): pass
+    def play_score(): pass
+    def play_game_over(): pass
+    _SOUND_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +78,10 @@ MAX_PIPE_SPEED = 6
 BIRD_X = 80
 BIRD_RADIUS = 18
 
+# ── Improvement 4: gesture smoothing settings ────────────────────────────────
+GESTURE_WINDOW = 5        # number of frames to average over
+OPEN_THRESHOLD = 0.6      # 60% of frames must read "open" to confirm flap
+
 
 class Bird:
     """The flappy bird."""
@@ -66,6 +94,8 @@ class Bird:
 
     def flap(self):
         self.vy = FLAP_FORCE
+        # ── Improvement 3: play flap sound ───────────────────────────────────
+        play_flap()
 
     def update(self):
         self.vy += GRAVITY
@@ -181,10 +211,14 @@ class FlappyBirdGame:
             b = int(SKY_TOP[2] + (SKY_BOTTOM[2] - SKY_TOP[2]) * t)
             pygame.draw.line(self.bg_surface, (r, g, b), (0, y), (SCREEN_W, y))
 
+        # ── Improvement 1: load persisted high score on startup ──────────────
+        self.high_score = get_high_score("Flappy Bird")
+
         self.reset()
         self.cam_surface = None
-        self.high_score = 0
-        self.open_frames = 0
+
+        # ── Improvement 4: gesture smoothing window ──────────────────────────
+        self._gesture_window = []
         self.flap_cooldown_until = 0.0
 
     def reset(self):
@@ -198,8 +232,11 @@ class FlappyBirdGame:
         self.started = False
         self.was_open = False
         self.ground_offset = 0
-        self.open_frames = 0
         self.flap_cooldown_until = 0.0
+        # ── Improvement 4: clear gesture window on reset ─────────────────────
+        self._gesture_window = []
+        # ── Improvement 1: re-load high score in case it updated ─────────────
+        self.high_score = get_high_score("Flappy Bird")
 
     def update(self):
         if self.game_over or not self.started:
@@ -221,7 +258,12 @@ class FlappyBirdGame:
             if not pipe.passed and pipe.x + PIPE_W < self.bird.x:
                 pipe.passed = True
                 self.score += 1
-                self.high_score = max(self.high_score, self.score)
+                # ── Improvement 1: save high score as you play ────────────────
+                if self.score > self.high_score:
+                    self.high_score = self.score
+                    save_score("Flappy Bird", self.high_score)
+                # ── Improvement 3: play score sound ──────────────────────────
+                play_score()
 
             if pipe.is_off_screen():
                 self.pipes.remove(pipe)
@@ -229,6 +271,8 @@ class FlappyBirdGame:
             # Collision
             if pipe.collides(self.bird.get_rect()):
                 self.game_over = True
+                # ── Improvement 3: play game over sound ──────────────────────
+                play_game_over()
 
         # Spawn pipes
         if len(self.pipes) == 0 or self.pipes[-1].x < SCREEN_W - PIPE_SPAWN_DIST:
@@ -237,6 +281,8 @@ class FlappyBirdGame:
         # Floor / ceiling collision
         if self.bird.y + BIRD_RADIUS > SCREEN_H - 50 or self.bird.y - BIRD_RADIUS < 0:
             self.game_over = True
+            # ── Improvement 3: play game over sound (floor/ceiling hit) ──────
+            play_game_over()
 
     def draw_cam_overlay(self, frame):
         frame_small = cv2.resize(frame, (120, 90))
@@ -271,7 +317,6 @@ class FlappyBirdGame:
 
         # Score
         score_text = self.font_large.render(str(self.score), True, WHITE)
-        # Shadow
         shadow_text = self.font_large.render(str(self.score), True, (0, 0, 0))
         self.screen.blit(shadow_text, (SCREEN_W // 2 - score_text.get_width() // 2 + 2, 22))
         self.screen.blit(score_text, (SCREEN_W // 2 - score_text.get_width() // 2, 20))
@@ -279,12 +324,28 @@ class FlappyBirdGame:
         level_text = self.font_small.render(f"Level {self.level}", True, (200, 225, 255))
         self.screen.blit(level_text, (15, 16))
 
+        # ── Improvement 1: show persistent high score in HUD ─────────────────
+        hs_color = (255, 210, 80) if self.score >= self.high_score and self.score > 0 else (180, 180, 210)
+        hs_text = self.font_small.render(f"Best: {self.high_score}", True, hs_color)
+        self.screen.blit(hs_text, (15, 40))
+
         # Hand gesture indicator
         gesture = self.tracker.get_gesture() if self.tracker.hand_detected else None
         indicator_color = (100, 255, 100) if gesture == "open" else (255, 100, 100)
         gesture_label = gesture if gesture else "No hand"
         indicator_text = self.font_small.render(f"✋ {gesture_label}", True, indicator_color)
         self.screen.blit(indicator_text, (10, SCREEN_H - 80))
+
+        # ── Improvement 4: show gesture confidence bar ───────────────────────
+        if self._gesture_window:
+            confidence = sum(self._gesture_window) / len(self._gesture_window)
+            bar_w = int(120 * confidence)
+            bar_color = (100, 255, 100) if confidence >= OPEN_THRESHOLD else (255, 180, 80)
+            pygame.draw.rect(self.screen, (50, 50, 70), (10, SCREEN_H - 55, 120, 10), border_radius=4)
+            if bar_w > 0:
+                pygame.draw.rect(self.screen, bar_color, (10, SCREEN_H - 55, bar_w, 10), border_radius=4)
+            conf_label = self.font_small.render("Gesture confidence", True, (130, 130, 160))
+            self.screen.blit(conf_label, (10, SCREEN_H - 42))
 
         # Camera overlay
         if self.cam_surface:
@@ -308,6 +369,11 @@ class FlappyBirdGame:
                 start = self.font_small.render("Camera unavailable - press SPACE to play", True, (255, 180, 180))
             self.screen.blit(start, (SCREEN_W // 2 - start.get_width() // 2, 280))
 
+            # Show all-time best on start screen
+            if self.high_score > 0:
+                best_start = self.font_small.render(f"Your best: {self.high_score}", True, BIRD_BODY)
+                self.screen.blit(best_start, (SCREEN_W // 2 - best_start.get_width() // 2, 320))
+
         # Game Over
         if self.game_over:
             overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -320,7 +386,11 @@ class FlappyBirdGame:
             score_display = self.font_medium.render(f"Score: {self.score}", True, WHITE)
             self.screen.blit(score_display, (SCREEN_W // 2 - score_display.get_width() // 2, 240))
 
-            best_display = self.font_small.render(f"High Score: {self.high_score}", True, BIRD_BODY)
+            # ── Improvement 1: "NEW HIGH SCORE!" banner or all-time best ─────
+            if self.score >= self.high_score and self.score > 0:
+                best_display = self.font_small.render("NEW HIGH SCORE!", True, BIRD_BODY)
+            else:
+                best_display = self.font_small.render(f"High Score: {self.high_score}", True, BIRD_BODY)
             self.screen.blit(best_display, (SCREEN_W // 2 - best_display.get_width() // 2, 290))
 
             restart = self.font_small.render("Press R to restart  |  ESC to quit", True, (180, 180, 180))
@@ -358,22 +428,27 @@ class FlappyBirdGame:
 
                 gesture = self.tracker.get_gesture()
                 is_open = gesture == "open"
-
                 now = time.time()
-                self.open_frames = self.open_frames + 1 if is_open else 0
 
-                # Flap on debounced open hand
-                if self.open_frames >= 2 and now >= self.flap_cooldown_until:
+                # ── Improvement 4: rolling confidence window ─────────────────
+                self._gesture_window.append(is_open)
+                if len(self._gesture_window) > GESTURE_WINDOW:
+                    self._gesture_window.pop(0)
+
+                confidence = sum(self._gesture_window) / len(self._gesture_window)
+
+                if confidence >= OPEN_THRESHOLD and now >= self.flap_cooldown_until:
                     if not self.started:
                         self.started = True
                     if not self.game_over:
                         self.bird.flap()
-                        self.flap_cooldown_until = now + 0.18
-                    self.open_frames = 0
+                        self.flap_cooldown_until = now + 0.22
+                    self._gesture_window.clear()
 
                 self.was_open = is_open
             else:
                 self.tracker.hand_detected = False
+                self._gesture_window.clear()
 
             self.update()
             self.draw()

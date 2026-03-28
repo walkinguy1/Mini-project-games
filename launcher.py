@@ -1,6 +1,9 @@
 """
 Hand Tracking Games Launcher
-Main menu to select and launch any of the 6 hand-tracking mini-games.
+Main menu to select and launch any of the 12 hand-tracking mini-games.
+
+Improvements applied:
+  5. Live high scores displayed on each game card (reads scores.json)
 """
 
 import sys
@@ -16,6 +19,24 @@ import pygame
 # Ensure modules can be found
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hand_tracker import HandTracker
+
+try:
+    from games.score_manager import get_high_score as _shared_get_high_score
+except ImportError:
+    _shared_get_high_score = None
+
+
+# ---------------------------------------------------------------------------
+# Improvement 5: high score helper (via shared score_manager.py)
+# ---------------------------------------------------------------------------
+def _get_high_score(game_name: str) -> int:
+    """Return the saved high score for a game, or 0 if unavailable."""
+    if _shared_get_high_score is None:
+        return 0
+    try:
+        return int(_shared_get_high_score(game_name))
+    except Exception:
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +199,21 @@ class Launcher:
         self.last_pinch = False
         self.animation_time = 0
 
+        # ── Improvement 5: cache scores so we don't read the file every frame ─
+        # Scores are refreshed each time we return from a game via _reset_after_game
+        self._score_cache = {}
+        self._refresh_score_cache()
+
+    # ── Improvement 5: score cache helpers ───────────────────────────────────
+    def _refresh_score_cache(self):
+        """Re-read scores.json into memory. Called on startup and after each game."""
+        self._score_cache = {game["name"]: _get_high_score(game["name"]) for game in GAMES}
+
+    def _cached_score(self, game_name: str) -> int:
+        return self._score_cache.get(game_name, 0)
+
+    # -------------------------------------------------------------------------
+
     def _init_pygame(self):
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
@@ -209,6 +245,8 @@ class Launcher:
         self.hover_start = 0
         self.hover_progress = 0
         self.last_pinch = False
+        # ── Improvement 5: refresh scores now that a game may have updated them
+        self._refresh_score_cache()
 
     def _release_resources(self):
         if hasattr(self, "cap") and self.cap:
@@ -364,7 +402,14 @@ class Launcher:
 
         # Description
         desc_text = self.font_card_desc.render(game["desc"], True, SUBTITLE)
-        self.screen.blit(desc_text, (draw_rect.x + 14, draw_rect.y + 84))
+        self.screen.blit(desc_text, (draw_rect.x + 14, draw_rect.y + 74))
+
+        # ── Improvement 5: show high score beneath description ────────────────
+        hs = self._cached_score(game["name"])
+        if hs > 0:
+            hs_color = (160, 220, 150)   # soft green so it doesn't clash with the accent color
+            hs_text = self.font_card_desc.render(f"Best: {hs}", True, hs_color)
+            self.screen.blit(hs_text, (draw_rect.x + 14, draw_rect.y + 88))
 
         # Hover progress ring
         if hovered and self.hover_progress > 0 and not self.selection_mode:

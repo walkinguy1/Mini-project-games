@@ -1,6 +1,10 @@
 """
 Fruit Ninja — Hand Tracking Edition
 Swipe with your index finger to slice fruits rising from the bottom of the screen.
+
+Improvements applied:
+  1. Persistent high score (reads/writes scores.json via score_manager.py)
+  3. Procedural sound effects (via sound_fx.py — no audio files needed)
 """
 
 import sys
@@ -15,6 +19,26 @@ import pygame
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hand_tracker import HandTracker
+
+# ── Improvement 1: persistent high score ────────────────────────────────────
+try:
+    from games.score_manager import save_score, get_high_score
+    _SCORES_AVAILABLE = True
+except ImportError:
+    # Graceful fallback if score_manager.py hasn't been created yet
+    def save_score(name, score): pass
+    def get_high_score(name): return 0
+    _SCORES_AVAILABLE = False
+
+# ── Improvement 3: procedural sound effects ──────────────────────────────────
+try:
+    from games.sound_fx import play_slice, play_game_over
+    _SOUND_AVAILABLE = True
+except ImportError:
+    # Graceful fallback if sound_fx.py hasn't been created yet
+    def play_slice(): pass
+    def play_game_over(): pass
+    _SOUND_AVAILABLE = False
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +170,9 @@ class FruitNinjaGame:
         self.camera_ready = self.cap.isOpened()
         self.tracker = HandTracker(max_hands=1, detection_confidence=0.7)
 
+        # ── Improvement 1: load persisted high score on startup ──────────────
+        self.high_score = get_high_score("Fruit Ninja")
+
         # Game state
         self.score = 0
         self.combo = 0
@@ -200,6 +227,14 @@ class FruitNinjaGame:
                 self.combo += 1
                 self.best_combo = max(self.best_combo, self.combo)
 
+                # ── Improvement 3: play slice sound ──────────────────────────
+                play_slice()
+
+                # ── Improvement 1: update and save high score live ────────────
+                if self.score > self.high_score:
+                    self.high_score = self.score
+                    save_score("Fruit Ninja", self.high_score)
+
                 # Spawn particles
                 for _ in range(12):
                     self.particles.append(Particle(fruit.x, fruit.y, fruit.color))
@@ -247,6 +282,12 @@ class FruitNinjaGame:
                     self.combo = 0
                     if self.lives <= 0:
                         self.game_over = True
+                        # ── Improvement 3: play game over sound ──────────────
+                        play_game_over()
+                        # ── Improvement 1: save final score on game over ──────
+                        if self.score > self.high_score:
+                            self.high_score = self.score
+                            save_score("Fruit Ninja", self.high_score)
                 self.fruits.remove(fruit)
 
         # Update particles
@@ -316,6 +357,11 @@ class FruitNinjaGame:
         active_text = self.font_small.render(f"Active Fruits: {len(self.fruits)}", True, (160, 170, 210))
         self.screen.blit(active_text, (20, 86))
 
+        # ── Improvement 1: show persistent high score in HUD ─────────────────
+        hs_color = (255, 210, 80) if self.score >= self.high_score and self.score > 0 else (180, 180, 200)
+        hs_text = self.font_small.render(f"Best: {self.high_score}", True, hs_color)
+        self.screen.blit(hs_text, (20, 120))
+
         # HUD - Combo
         if self.combo > 1:
             combo_text = self.font_small.render(f"Combo x{self.combo}!", True, YELLOW)
@@ -345,19 +391,26 @@ class FruitNinjaGame:
             self.screen.blit(overlay, (0, 0))
 
             go_text = self.font_large.render("GAME OVER", True, RED)
-            go_rect = go_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 50))
+            go_rect = go_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 70))
             self.screen.blit(go_text, go_rect)
 
             final_text = self.font_medium.render(
                 f"Final Score: {self.score}  |  Best Combo: {self.best_combo}", True, WHITE
             )
-            final_rect = final_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 + 20))
+            final_rect = final_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2))
             self.screen.blit(final_text, final_rect)
+
+            # ── Improvement 1: show all-time high score on game over screen ───
+            hs_label = "NEW HIGH SCORE!" if self.score >= self.high_score and self.score > 0 else f"High Score: {self.high_score}"
+            hs_color_go = YELLOW if self.score >= self.high_score and self.score > 0 else (180, 180, 200)
+            hs_go_text = self.font_small.render(hs_label, True, hs_color_go)
+            hs_go_rect = hs_go_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 + 45))
+            self.screen.blit(hs_go_text, hs_go_rect)
 
             restart_text = self.font_small.render(
                 "Press R to restart  |  ESC to quit", True, (180, 180, 180)
             )
-            restart_rect = restart_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 + 70))
+            restart_rect = restart_text.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 + 85))
             self.screen.blit(restart_text, restart_rect)
 
         if self.paused and not self.game_over:
@@ -389,6 +442,8 @@ class FruitNinjaGame:
         self.mouse_pos = None
         self.prev_mouse_pos = None
         self.mouse_swiping = False
+        # ── Improvement 1: re-load high score in case it was updated ─────────
+        self.high_score = get_high_score("Fruit Ninja")
 
     def run(self):
         """Main game loop."""

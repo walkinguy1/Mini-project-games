@@ -15,6 +15,15 @@ import pygame
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from hand_tracker import HandTracker
 
+try:
+    from games.score_manager import save_score, get_high_score
+except ImportError:
+    def save_score(name, score):
+        return False
+
+    def get_high_score(name):
+        return 0
+
 
 SCREEN_W, SCREEN_H = 800, 600
 FPS = 60
@@ -44,6 +53,8 @@ GRID_Y = 70
 BOOST_SECS = 1.8
 BOOST_COOLDOWN_SECS = 0.75
 LEVEL_ROWS = [4, 5, 6, 7]
+KEY_PADDLE_SPEED = 7.5
+MIN_BALL_VY = 2.15
 
 
 class BreakoutGame:
@@ -67,6 +78,8 @@ class BreakoutGame:
         self.last_pinch = False
         self.boost_until = 0.0
         self.boost_cooldown_until = 0.0
+        self.high_score = get_high_score("Breakout")
+        self._high_score_saved_for_round = False
         self.reset()
 
     def build_bricks(self, rows):
@@ -87,6 +100,7 @@ class BreakoutGame:
         rows = LEVEL_ROWS[min(self.level - 1, len(LEVEL_ROWS) - 1)]
         self.bricks = self.build_bricks(rows)
         self.paddle_x = SCREEN_W // 2 - self.current_paddle_width() // 2
+        self.paddle_vx = 0.0
         self.ball_x = SCREEN_W // 2
         self.ball_y = SCREEN_H // 2
         self.ball_vx = random.choice([-1, 1]) * self.ball_base_speed
@@ -102,6 +116,8 @@ class BreakoutGame:
         self.max_level = len(LEVEL_ROWS)
         self.game_over = False
         self.win = False
+        self.high_score = get_high_score("Breakout")
+        self._high_score_saved_for_round = False
         self.setup_level(1)
 
     def current_paddle_width(self):
@@ -122,6 +138,53 @@ class BreakoutGame:
         scale = target / max(0.001, speed)
         self.ball_vx *= scale
         self.ball_vy *= scale
+
+    def _stabilize_ball_vector(self):
+        """Avoid near-horizontal loops while preserving intended speed range."""
+        speed = (self.ball_vx * self.ball_vx + self.ball_vy * self.ball_vy) ** 0.5
+        min_speed = min(MAX_BALL_SPEED, self.ball_base_speed * 0.92)
+        target_speed = max(min_speed, min(MAX_BALL_SPEED, speed))
+
+        vy_sign = -1 if self.ball_vy < 0 else 1
+        if abs(self.ball_vy) < MIN_BALL_VY:
+            self.ball_vy = vy_sign * MIN_BALL_VY
+
+        vx_abs = max(0.0, target_speed * target_speed - self.ball_vy * self.ball_vy) ** 0.5
+        self.ball_vx = vx_abs if self.ball_vx >= 0 else -vx_abs
+
+    def _handle_brick_collision(self, ball_rect):
+        """Resolve one brick collision per frame using shallow-overlap axis."""
+        for row in self.bricks:
+            for brick in row[:]:
+                if not ball_rect.colliderect(brick):
+                    continue
+
+                row.remove(brick)
+                overlap_left = ball_rect.right - brick.left
+                overlap_right = brick.right - ball_rect.left
+                overlap_top = ball_rect.bottom - brick.top
+                overlap_bottom = brick.bottom - ball_rect.top
+                overlap_x = min(overlap_left, overlap_right)
+                overlap_y = min(overlap_top, overlap_bottom)
+
+                if overlap_x < overlap_y:
+                    if self.ball_vx > 0:
+                        self.ball_x = brick.left - BALL_RADIUS
+                    else:
+                        self.ball_x = brick.right + BALL_RADIUS
+                    self.ball_vx *= -1
+                else:
+                    if self.ball_vy > 0:
+                        self.ball_y = brick.top - BALL_RADIUS
+                    else:
+                        self.ball_y = brick.bottom + BALL_RADIUS
+                    self.ball_vy *= -1
+
+                self.accelerate_ball(0.05)
+                self._stabilize_ball_vector()
+                self.score += 10
+                return True
+        return False
 
     def update(self):
         if self.level_cleared:
@@ -154,6 +217,7 @@ class BreakoutGame:
             if self.lives <= 0:
                 self.game_over = True
                 self.win = False
+                self._persist_high_score_if_needed()
             else:
                 self.ball_x = SCREEN_W // 2
                 self.ball_y = SCREEN_H // 2
@@ -167,19 +231,13 @@ class BreakoutGame:
         if ball_rect.colliderect(paddle_rect) and self.ball_vy > 0:
             self.ball_y = PADDLE_Y - BALL_RADIUS
             hit = (self.ball_x - paddle_rect.x) / max(1, paddle_rect.w) - 0.5
-            self.ball_vx = self.ball_base_speed * 2.4 * hit
+            self.ball_vx = self.ball_base_speed * 2.4 * hit + self.paddle_vx * 0.28
             if abs(self.ball_vx) < 1.1:
                 self.ball_vx = 1.1 if self.ball_vx >= 0 else -1.1
             self.ball_vy = -abs(self.ball_base_speed)
+            self._stabilize_ball_vector()
 
-        for row in self.bricks:
-            for brick in row[:]:
-                if ball_rect.colliderect(brick):
-                    row.remove(brick)
-                    self.ball_vy *= -1
-                    self.accelerate_ball(0.05)
-                    self.score += 10
-                    break
+        self._handle_brick_collision(ball_rect)
 
         self.bricks = [row for row in self.bricks if row]
         if not self.bricks:
@@ -190,6 +248,15 @@ class BreakoutGame:
             else:
                 self.game_over = True
                 self.win = True
+                self._persist_high_score_if_needed()
+
+    def _persist_high_score_if_needed(self):
+        """Save score once per finished run and refresh local high score."""
+        if self._high_score_saved_for_round:
+            return
+        save_score("Breakout", self.score)
+        self.high_score = max(self.high_score, self.score)
+        self._high_score_saved_for_round = True
 
     def draw_cam_overlay(self, frame):
         frame_small = cv2.resize(frame, (130, 96))
@@ -213,7 +280,7 @@ class BreakoutGame:
         pygame.draw.circle(self.screen, BALL, (int(self.ball_x), int(self.ball_y)), BALL_RADIUS)
 
         hud = self.font_small.render(
-            f"Level: {self.level}/{self.max_level}   Score: {self.score}   Lives: {self.lives}",
+            f"Level: {self.level}/{self.max_level}   Score: {self.score}   Best: {self.high_score}   Lives: {self.lives}",
             True,
             WHITE,
         )
@@ -241,8 +308,10 @@ class BreakoutGame:
             self.screen.blit(title, (SCREEN_W // 2 - title.get_width() // 2, SCREEN_H // 2 - 70))
             sub = self.font_medium.render(f"Score: {self.score}", True, WHITE)
             self.screen.blit(sub, (SCREEN_W // 2 - sub.get_width() // 2, SCREEN_H // 2 - 10))
+            best = self.font_small.render(f"Best: {self.high_score}", True, (205, 225, 255))
+            self.screen.blit(best, (SCREEN_W // 2 - best.get_width() // 2, SCREEN_H // 2 + 24))
             hint = self.font_small.render("Press R to restart  |  ESC to quit", True, (190, 190, 210))
-            self.screen.blit(hint, (SCREEN_W // 2 - hint.get_width() // 2, SCREEN_H // 2 + 50))
+            self.screen.blit(hint, (SCREEN_W // 2 - hint.get_width() // 2, SCREEN_H // 2 + 58))
 
         if self.level_cleared:
             overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -262,6 +331,7 @@ class BreakoutGame:
     def run(self):
         running = True
         while running:
+            keys = pygame.key.get_pressed()
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
@@ -272,6 +342,13 @@ class BreakoutGame:
                         self.reset()
                     elif event.key == pygame.K_SPACE and not self.game_over:
                         self.started = True
+
+            prev_paddle_x = self.paddle_x
+
+            if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+                self.paddle_x -= KEY_PADDLE_SPEED
+            if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+                self.paddle_x += KEY_PADDLE_SPEED
 
             ret, frame = (False, None)
             if self.camera_ready:
@@ -287,7 +364,6 @@ class BreakoutGame:
                     paddle_w = self.current_paddle_width()
                     target_x = pos[0] - paddle_w / 2
                     self.paddle_x += (target_x - self.paddle_x) * 0.35
-                    self.paddle_x = max(0, min(SCREEN_W - paddle_w, self.paddle_x))
 
                 pinch = False
                 pdist = self.tracker.get_pinch_distance(SCREEN_W, SCREEN_H)
@@ -299,6 +375,14 @@ class BreakoutGame:
                 self.last_pinch = pinch
             else:
                 self.tracker.hand_detected = False
+
+            paddle_w = self.current_paddle_width()
+            self.paddle_x = max(0, min(SCREEN_W - paddle_w, self.paddle_x))
+            self.paddle_vx = self.paddle_x - prev_paddle_x
+
+            if not self.started and not self.game_over and not self.level_cleared:
+                self.ball_x = self.paddle_x + paddle_w / 2
+                self.ball_y = PADDLE_Y - BALL_RADIUS - 1
 
             self.update()
             self.draw()

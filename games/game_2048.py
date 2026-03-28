@@ -47,9 +47,9 @@ TILE_COLORS = {
     2048: (237, 194, 46),
 }
 
-SWIPE_THRESHOLD = 85
-AXIS_LOCK_RATIO = 1.2
-MOVE_COOLDOWN = 0.18
+SWIPE_THRESHOLD = 64
+AXIS_LOCK_RATIO = 1.35
+MOVE_COOLDOWN = 0.15
 LEVEL_TARGETS = [256, 512, 1024, 2048]
 
 
@@ -197,10 +197,13 @@ class Game2048:
             self.setup_level(self.level + 1)
 
     def detect_swipe(self):
+        """Detect axis-aligned swipes using hysteresis: swipe needs minimum distance
+        and must be clearly in one direction (not diagonal)."""
         now = time.time()
         if now < self.cooldown_until:
             return None
         if self.finger_pos is None:
+            self.swipe_anchor = None
             return None
 
         if self.swipe_anchor is None:
@@ -209,18 +212,27 @@ class Game2048:
 
         dx = self.finger_pos[0] - self.swipe_anchor[0]
         dy = self.finger_pos[1] - self.swipe_anchor[1]
-        if abs(dx) < SWIPE_THRESHOLD and abs(dy) < SWIPE_THRESHOLD:
+        dist_x = abs(dx)
+        dist_y = abs(dy)
+        total_dist = max(dist_x, dist_y)
+
+        if total_dist < SWIPE_THRESHOLD:
+            return None
+
+        detected_direction = None
+        if dist_x > dist_y:
+            if dist_x > dist_y * AXIS_LOCK_RATIO:
+                detected_direction = "right" if dx > 0 else "left"
+        else:
+            if dist_y > dist_x * AXIS_LOCK_RATIO:
+                detected_direction = "down" if dy > 0 else "up"
+
+        if detected_direction is None:
             return None
 
         self.cooldown_until = now + MOVE_COOLDOWN
         self.swipe_anchor = self.finger_pos
-        if abs(dx) > abs(dy):
-            if abs(dx) < abs(dy) * AXIS_LOCK_RATIO:
-                return None
-            return "right" if dx > 0 else "left"
-        if abs(dy) < abs(dx) * AXIS_LOCK_RATIO:
-            return None
-        return "down" if dy > 0 else "up"
+        return detected_direction
 
     def draw_cam_overlay(self, frame):
         frame_small = cv2.resize(frame, (120, 90))

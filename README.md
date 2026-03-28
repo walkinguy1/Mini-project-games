@@ -6,6 +6,7 @@ A collection of hand-tracking mini-games built with Python, OpenCV, MediaPipe, T
 
 - Hand-tracking launcher with card-based game selection.
 - **Selection Menu** in launcher to queue multiple games and play them sequentially.
+- Shared score persistence with safer file handling for high scores.
 - Mouse/keyboard fallback when camera or hand tracking is unavailable.
 - Multiple games with level/campaign progression in the newer set.
 
@@ -97,6 +98,8 @@ python launcher.py
   - Hand: move paddle using fingertip x-position.
   - Pinch: temporary paddle boost.
   - Keyboard fallback: `SPACE` launch, `R` restart, `ESC` quit.
+- Scoring:
+  - Persistent high score is saved and shown in-game (and on launcher card).
 - Levels:
   - Multi-level progression with more rows, faster ball, narrower paddle each level.
 
